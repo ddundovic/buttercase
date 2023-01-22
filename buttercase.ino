@@ -1,6 +1,10 @@
 #include <Ticker.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <Smoothed.h>
+#include <Preferences.h>
 
 #define CYCLES 20000
 #define trace 1         // trace prints on/off
@@ -20,7 +24,7 @@
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
-// Preferences preferences;
+Preferences preferences;
 
 const char *flashNamespace = "data";         // flash memory namespace
 const char *device = "esp8266";              // device part of topic name
@@ -95,14 +99,14 @@ Ticker tmr24h(t24h, 24 * 60 * 60 * (unsigned long)1000, 0, MILLIS);
 
 void pingServer()
 {
-  // // Serial.println("pingServer");
-  // lastMilisSent = millis();
-  // mqttClient.publish(topicPing, (byte *)&lastMilisSent, sizeof(long));
-  // // doc = sendGETRequest("?q=ping");
-  // // if (strcmp(doc["a"], "pong"))
-  // // {
-  // //   // set flag to restart state machine
-  // // }
+  // Serial.println("pingServer");
+  lastMilisSent = millis();
+  mqttClient.publish(topicPing, (byte *)&lastMilisSent, sizeof(long));
+  // doc = sendGETRequest("?q=ping");
+  // if (strcmp(doc["a"], "pong"))
+  // {
+  //   // set flag to restart state machine
+  // }
 }
 
 void t1s() { triggers |= (unsigned long)1 << _t1s; }
@@ -116,38 +120,22 @@ int triggered(int trigger) { return triggers & (unsigned long)1 << trigger; }
 
 void callback(char *topic, byte *message, unsigned int length)
 {
-  // if (!strcmp(topicPong, topic))
+  if (!strcmp(topicPong, topic))
+  {
+    // pong received
+    Serial.println(String("Ping RTT: ") + (millis() - lastMilisSent) + "ms");
+  }
+  // else if (!strcmp(topicSrvCmd, topic))
   // {
-  //   // pong received
-  //   Serial.println(String("Ping RTT: ") + (millis() - lastMilisSent) + "ms");
-  // }
-  // // else if (!strcmp(topicSrvCmd, topic))
-  // // {
-  // //   // server command received
-  // //   String cmd = "";
-  // //   for (int i = 0; i < length; i++)
-  // //     cmd += (char)message[i];
-  // //   int res = decodeCmd(cmd);
-  // //   if (!res)
-  // //     mqttClient.publish(topicSrvCmdAck, cmd.c_str());
-  // //   else
-  // //     mqttClient.publish(topicSrvCmdAck, (String("Unknown command: ") + cmd).c_str());
-  // // }
-  // else if (!strcmp(topicForceCmd, topic))
-  // {
-  //   if (*message == 0x31)  // ASCII for "1"
-  //   {
-  //     if (state == 202) nextState = 203;
-  //     mqttClient.publish(topicForceCmd, "0");
-  //   }
-  // }
-  // else if (!strcmp(topicForceStopCmd, topic))
-  // {
-  //  if (*message == 0x31)  // ASCII for "1"
-  //   {
-  //     if (state == 203) nextState = 201;
-  //     mqttClient.publish(topicForceStopCmd, "0");
-  //   }
+  //   // server command received
+  //   String cmd = "";
+  //   for (int i = 0; i < length; i++)
+  //     cmd += (char)message[i];
+  //   int res = decodeCmd(cmd);
+  //   if (!res)
+  //     mqttClient.publish(topicSrvCmdAck, cmd.c_str());
+  //   else
+  //     mqttClient.publish(topicSrvCmdAck, (String("Unknown command: ") + cmd).c_str());
   // }
   // else if (!strcmp(topicSetDateTime, topic))
   // {
@@ -215,36 +203,36 @@ void callback(char *topic, byte *message, unsigned int length)
   //     }
   //   }
   // }
-  // else
-  // {
-  //   Serial.print("Message arrived on topic: ");
-  //   Serial.print(topic);
-  //   Serial.print(". Message: ");
-  //   String messageTemp;
+  else
+  {
+    Serial.print("Message arrived on topic: ");
+    Serial.print(topic);
+    Serial.print(". Message: ");
+    String messageTemp;
 
-  //   for (int i = 0; i < length; i++)
-  //   {
-  //     Serial.print((char)message[i]);
-  //     messageTemp += (char)message[i];
-  //   }
-  //   Serial.println();
+    for (int i = 0; i < length; i++)
+    {
+      Serial.print((char)message[i]);
+      messageTemp += (char)message[i];
+    }
+    Serial.println();
 
-  //   // Feel free to add more if statements to control more GPIOs with MQTT
+    // Feel free to add more if statements to control more GPIOs with MQTT
 
-  //   // If a message is received on the topic esp32/output, you check if the message is either "on" or "off".
-  //   // Changes the output state according to the message
-  //   // if (String(topic) == "esp32/output") {
-  //   //   Serial.print("Changing output to ");
-  //   //   if(messageTemp == "on"){
-  //   //     Serial.println("on");
-  //   //     digitalWrite(ledPin, HIGH);
-  //   //   }
-  //   //   else if(messageTemp == "off"){
-  //   //     Serial.println("off");
-  //   //     digitalWrite(ledPin, LOW);
-  //   //   }
-  //   //}
-  // }
+    // If a message is received on the topic esp32/output, you check if the message is either "on" or "off".
+    // Changes the output state according to the message
+    // if (String(topic) == "esp32/output") {
+    //   Serial.print("Changing output to ");
+    //   if(messageTemp == "on"){
+    //     Serial.println("on");
+    //     digitalWrite(ledPin, HIGH);
+    //   }
+    //   else if(messageTemp == "off"){
+    //     Serial.println("off");
+    //     digitalWrite(ledPin, LOW);
+    //   }
+    //}
+  }
 }
 
 void reconnect()
