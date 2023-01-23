@@ -15,6 +15,8 @@
 // #define SSR2 18        // output pin for Solid State Relay 2
 // #define PushButton1 16 // input pin for pushbutton
 // #define forcedLED 17   // output pin for LED signaling that forced state is ON
+ #define RELAY 0          // relay connected to GPIO0
+ #define oneWireBus 2     // pin for DS18B20 temp. sensor
 
 #ifdef test_loc
   #include "test_loc.h"
@@ -25,6 +27,8 @@
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 Preferences preferences;
+OneWire oneWire(oneWireBus);
+DallasTemperature sensors(&oneWire);
 
 const char *flashNamespace = "data";         // flash memory namespace
 const char *device = "esp8266";              // device part of topic name
@@ -37,8 +41,8 @@ char *topicState;                            // current state of state machine t
 char *topicLastNTPSync;                      // last NTP sync topic
 char *topicStateStr;                         // current state of state machine topic (string)
 char *topicCycleUs;                          // topic for cycle time in us
-// char *topicForceCmd;                         // topic for command to switch to forced state (on "1")
-// char *topicForceStopCmd;                     // topic for command to switch to low tarrif state (on "1")
+char *topicForceCmd;                         // topic for command to switch relay ON
+char *topicForceStopCmd;                     // topic for command to switch relay OFF
 // char *topicESP32Time;                        // topic for ESP RTC time, reported every minute
 // char *topicSetDateTime;                      // topic for setting ESP RTC datetime (ISO format)
 char *topicBootCounter;                      // boot counter
@@ -51,7 +55,8 @@ char *topicMAC;                              // ESP MAC address - unique ID (for
 // char *topicFwVersion;                        // ESP firmware version string in format: "YYYY-MM-DDTHH:MM (<git hash>)"
 
 unsigned long state, cycleCnt, cycleTimeUs, lastMilisSent, triggers = 0, nextState = 0;
-//byte outputSSR = LOW, outputForcedLED = 0;
+byte outputRelay = LOW;
+float sensorTemp = 0;   // filtered temperature from sensor
 unsigned int bootCounter;  // boot counter saved in flash memory
 // uint64_t mac;                       // ESP32 MAC address - unique ID
 // uint8_t *mac_b = (uint8_t *) &mac;  // same as above, addressable by bytes 
@@ -124,6 +129,22 @@ void callback(char *topic, byte *message, unsigned int length)
   {
     // pong received
     Serial.println(String("Ping RTT: ") + (millis() - lastMilisSent) + "ms");
+  }
+  else if (!strcmp(topicForceCmd, topic))
+  {
+    if (*message == 0x31)  // ASCII for "1"
+    {
+      outputRelay = HIGH;
+      mqttClient.publish(topicForceCmd, "0");
+    }
+  }
+  else if (!strcmp(topicForceStopCmd, topic))
+  {
+   if (*message == 0x31)  // ASCII for "1"
+    {
+      outputRelay = LOW;
+      mqttClient.publish(topicForceStopCmd, "0");
+    }
   }
   // else if (!strcmp(topicSrvCmd, topic))
   // {
@@ -259,8 +280,8 @@ void reconnect()
       // Subscribe
       mqttClient.subscribe(topicPong);
       mqttClient.subscribe(topicSrvCmd);
-      // mqttClient.subscribe(topicForceCmd);
-      // mqttClient.subscribe(topicForceStopCmd);
+      mqttClient.subscribe(topicForceCmd);
+      mqttClient.subscribe(topicForceStopCmd);
       // mqttClient.subscribe(topicSetDateTime);
       mqttClient.subscribe(topicBootCounter);
       // mqttClient.subscribe(topicNTP1);
@@ -291,7 +312,7 @@ int connectToWiFi(const int network)
   WiFi.persistent(false);  
   delay(500);
   int res = -1, cnt = 0;
-  const int MAX_CYCLES = 10; // max number of 500ms cycles to wait for a wifi connection
+  const int MAX_CYCLES = 20; // max number of 500ms cycles to wait for a wifi connection
   Serial.println("");
   Serial.print("Trying SSID: ");
   Serial.println(ssid[network]);
@@ -368,6 +389,11 @@ void setup()
   // digitalWrite(SSR2, LOW);
   // pinMode(forcedLED, OUTPUT);
   // digitalWrite(forcedLED, LOW);
+  pinMode(RELAY, OUTPUT);
+  digitalWrite(RELAY, LOW);
+  // tempSensor.begin(SMOOTHED_EXPONENTIAL, 10);
+  // // tempSensor.clear();  // sends ESP32 into boot loop
+  sensors.begin();
   // preferences.begin(flashNamespace, false);
   // bootCounter = preferences.getUInt("bootCounter", 0);
   // bootCounter++;
@@ -397,7 +423,8 @@ void setup()
   {"srv_cmd_ack", &topicSrvCmdAck}, {"state", &topicState}, {"stateStr", &topicStateStr}, 
   {"cycleTimeUs", &topicCycleUs}, {"MAC", &topicMAC}, {"bootCounter", &topicBootCounter}, 
   {"CPU0ResetMsg", &topicCPU0ResetMsg}, {"CPU1ResetMsg", &topicCPU1ResetMsg}, 
-  {"temp", &topicTemp}, {"", NULL}};
+  {"temp", &topicTemp}, {"forceCmd", &topicForceCmd}, {"forceStopCmd", &topicForceStopCmd},
+  {"", NULL}};
   
   // {"lastNTPSync", &topicLastNTPSync}, {"forceCmd", &topicForceCmd}, 
   // {"forceStopCmd", &topicForceStopCmd}, {"ESP32Time", &topicESP32Time}, 
@@ -497,8 +524,17 @@ void loop()
     #ifdef trace
     Serial.println("state: " + String(state));
     #endif
+    sensors.requestTemperatures(); 
+    sensorTemp = sensors.getTempCByIndex(0);
+    // tempSensor.add(sensorTemp);
+    // sensorTemp = tempSensor.get();
+    #ifdef trace
+    Serial.println("state: " + String(state));
+    Serial.println("temp: " + String(sensorTemp));
+    #endif
     mqttClient.publish(topicState, String(state).c_str());
     mqttClient.publish(topicStateStr, stateStr(state).c_str());
+    mqttClient.publish(topicTemp, String(sensorTemp).c_str());
   }
   if (triggered(_t1m))
   {
@@ -567,9 +603,7 @@ void loop()
     break;
   }
   // write outputs
-  // digitalWrite(SSR1, outputSSR);
-  // digitalWrite(SSR2, outputSSR);
-  // digitalWrite(forcedLED, outputForcedLED);
+  digitalWrite(RELAY, outputRelay);
   triggers = 0; // clear triggers
   cycleCnt++;
   }
