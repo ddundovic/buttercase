@@ -5,23 +5,20 @@
 #include <DallasTemperature.h>
 #include <Smoothed.h>
 #include <Preferences.h>
+#include <PID_v1.h>
 
-#define CYCLES 20000
+#define CYCLES 50000
 #define trace 1         // trace prints on/off
 #define test_loc 1      // test location
 //#define kitchen 1       // kitchen location
 // pin definitions
-// #define SSR1 4         // output pin for Solid State Relay 1
-// #define SSR2 18        // output pin for Solid State Relay 2
-// #define PushButton1 16 // input pin for pushbutton
-// #define forcedLED 17   // output pin for LED signaling that forced state is ON
  #define RELAY 0          // relay connected to GPIO0
  #define oneWireBus 2     // pin for DS18B20 temp. sensor
 
 #ifdef test_loc
   #include "test_loc.h"
-#elif laganini2
-  #include "laganini2.h"
+#elif kitchen
+  #include "kitchen.h"
 #endif
 
 WiFiClient wifiClient;
@@ -55,12 +52,17 @@ char *topicMAC;                              // ESP MAC address - unique ID (for
 // char *topicFwVersion;                        // ESP firmware version string in format: "YYYY-MM-DDTHH:MM (<git hash>)"
 
 unsigned long state, cycleCnt, cycleTimeUs, lastMilisSent, triggers = 0, nextState = 0;
-byte outputRelay = LOW;
+byte outputRelay = HIGH;
 float sensorTemp = 0;   // filtered temperature from sensor
+// PID block
+double Setpoint, Input, Output;   // PID variables
+//Specify the links and initial tuning parameters
+double Kp=2, Ki=5, Kd=1;
+PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+int WindowSize = 5000;
+unsigned long windowStartTime;
+
 unsigned int bootCounter;  // boot counter saved in flash memory
-// uint64_t mac;                       // ESP32 MAC address - unique ID
-// uint8_t *mac_b = (uint8_t *) &mac;  // same as above, addressable by bytes 
-//String MAC = "";                       // same as above, formated into string
 char MAC[20] = {0};                 // same as above, formated into string
 // char fw_version[30] = {0};          // firmware version string in format: "YYYY-MM-DDTHH:MM (<git hash>)" auto updated
 // const int maxNtpNameLength = 40;
@@ -70,10 +72,6 @@ char MAC[20] = {0};                 // same as above, formated into string
 
 char resetMsgs[2][128];
 int resetCodes[2];
-// const int numCmd = 2;
-// const char *cmds[numCmd] = {"slow", "fast"};
-// [0][] - winter time, [1][] - summer time
-// [][0] - start high tariff, [][1] - end high tariff
 enum triggerOfs
 {
   _t1s,
@@ -134,7 +132,7 @@ void callback(char *topic, byte *message, unsigned int length)
   {
     if (*message == 0x31)  // ASCII for "1"
     {
-      outputRelay = HIGH;
+      outputRelay = LOW;
       mqttClient.publish(topicForceCmd, "0");
     }
   }
@@ -142,7 +140,7 @@ void callback(char *topic, byte *message, unsigned int length)
   {
    if (*message == 0x31)  // ASCII for "1"
     {
-      outputRelay = LOW;
+      outputRelay = HIGH;
       mqttClient.publish(topicForceStopCmd, "0");
     }
   }
@@ -360,6 +358,8 @@ String stateStr(int state)
 
 void setup() 
 {
+  pinMode(RELAY, OUTPUT);
+  digitalWrite(RELAY, HIGH);
   String s;
   char buf[50];
   Serial.begin(115200);
@@ -378,19 +378,6 @@ void setup()
   // getVersionStr(fw_version);
   strncpy(MAC, WiFi.macAddress().c_str(), 20);
 
-// disabled before
-  // pinMode(4, INPUT);
-  // digitalWrite(4, LOW);
-  // rtc_gpio_hold_dis(GPIO_NUM_4);
-
-  // pinMode(SSR1, OUTPUT);
-  // digitalWrite(SSR1, LOW);
-  // pinMode(SSR2, OUTPUT);
-  // digitalWrite(SSR2, LOW);
-  // pinMode(forcedLED, OUTPUT);
-  // digitalWrite(forcedLED, LOW);
-  pinMode(RELAY, OUTPUT);
-  digitalWrite(RELAY, LOW);
   // tempSensor.begin(SMOOTHED_EXPONENTIAL, 10);
   // // tempSensor.clear();  // sends ESP32 into boot loop
   sensors.begin();
@@ -449,6 +436,17 @@ void setup()
   tmr24h.start();
   //  boolean res = mqttClient.setBufferSize(50*1024); // ok for 640*480
   //  if (res) Serial.println("Buffer resized."); else Serial.println("Buffer resizing failed");
+
+  // init PID
+  windowStartTime = millis();
+  //initialize the variables we're linked to
+  Setpoint = 40;
+  Input = 1000;
+  //tell the PID to range between 0 and the full window size
+  myPID.SetOutputLimits(0, WindowSize);
+  //turn the PID on
+  myPID.SetMode(AUTOMATIC);  
+
   delay(1000);
   }
 
@@ -456,7 +454,6 @@ void s100()
 {
   static int network = 0;
   int res;
-//  outputSSR = LOW;  // open SSR at the end of cycle
   tmrPing.stop();
 #ifdef trace
   Serial.println("state: 100");
@@ -516,6 +513,17 @@ void updateTimers()
   tmr24h.update();
 }
 
+void processPID()
+{
+  myPID.Compute();
+  if (millis() - windowStartTime > WindowSize)
+  { //time to shift the Relay Window
+    windowStartTime += WindowSize;
+  }
+  // if (Output < millis() - windowStartTime) outputRelay = LOW;
+  // else outputRelay = HIGH;
+}
+
 void loop() 
 {
   updateTimers();
@@ -528,9 +536,14 @@ void loop()
     sensorTemp = sensors.getTempCByIndex(0);
     // tempSensor.add(sensorTemp);
     // sensorTemp = tempSensor.get();
+    Input = sensorTemp;
+    processPID();
     #ifdef trace
-    Serial.println("state: " + String(state));
+    Serial.println("SP: " + String(Setpoint));
     Serial.println("temp: " + String(sensorTemp));
+    Serial.println("input: " + String(Input));
+    Serial.println("output: " + String(Output));
+    Serial.println("outputRelay: " + String(outputRelay));
     #endif
     mqttClient.publish(topicState, String(state).c_str());
     mqttClient.publish(topicStateStr, stateStr(state).c_str());
