@@ -5,7 +5,6 @@
 #include <DallasTemperature.h>
 #include <Smoothed.h>
 #include <Preferences.h>
-#include <PID_v1.h>
 
 #define CYCLES 50000
 #define trace 1         // trace prints on/off
@@ -54,13 +53,6 @@ char *topicMAC;                              // ESP MAC address - unique ID (for
 unsigned long state, cycleCnt, cycleTimeUs, lastMilisSent, triggers = 0, nextState = 0;
 byte outputRelay = HIGH;
 float sensorTemp = 0;   // filtered temperature from sensor
-// PID block
-double Setpoint, Input, Output;   // PID variables
-//Specify the links and initial tuning parameters
-double Kp=2, Ki=5, Kd=1;
-PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
-int WindowSize = 5000;
-unsigned long windowStartTime;
 
 unsigned int bootCounter;  // boot counter saved in flash memory
 char MAC[20] = {0};                 // same as above, formated into string
@@ -437,16 +429,6 @@ void setup()
   //  boolean res = mqttClient.setBufferSize(50*1024); // ok for 640*480
   //  if (res) Serial.println("Buffer resized."); else Serial.println("Buffer resizing failed");
 
-  // init PID
-  windowStartTime = millis();
-  //initialize the variables we're linked to
-  Setpoint = 40;
-  Input = 1000;
-  //tell the PID to range between 0 and the full window size
-  myPID.SetOutputLimits(0, WindowSize);
-  //turn the PID on
-  myPID.SetMode(AUTOMATIC);  
-
   delay(1000);
   }
 
@@ -513,17 +495,6 @@ void updateTimers()
   tmr24h.update();
 }
 
-void processPID()
-{
-  myPID.Compute();
-  if (millis() - windowStartTime > WindowSize)
-  { //time to shift the Relay Window
-    windowStartTime += WindowSize;
-  }
-  // if (Output < millis() - windowStartTime) outputRelay = LOW;
-  // else outputRelay = HIGH;
-}
-
 void loop() 
 {
   updateTimers();
@@ -536,13 +507,9 @@ void loop()
     sensorTemp = sensors.getTempCByIndex(0);
     // tempSensor.add(sensorTemp);
     // sensorTemp = tempSensor.get();
-    Input = sensorTemp;
-    processPID();
     #ifdef trace
-    Serial.println("SP: " + String(Setpoint));
+    //Serial.println("SP: " + String(Setpoint));
     Serial.println("temp: " + String(sensorTemp));
-    Serial.println("input: " + String(Input));
-    Serial.println("output: " + String(Output));
     Serial.println("outputRelay: " + String(outputRelay));
     #endif
     mqttClient.publish(topicState, String(state).c_str());
