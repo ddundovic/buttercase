@@ -49,13 +49,17 @@ char *topicCPU1ResetMsg;                     // CPU1 last reset message
 // char *topicNTP3;                             // NTP3
 char *topicMAC;                              // ESP MAC address - unique ID (formatted string)
 // char *topicFwVersion;                        // ESP firmware version string in format: "YYYY-MM-DDTHH:MM (<git hash>)"
+char *topicHiTempSP;                         // high temperature setpoint
+char *topicWidthTemp;                        // hysteresis width in C
 
 unsigned long state, cycleCnt, cycleTimeUs, lastMilisSent, triggers = 0, nextState = 0;
 byte outputRelay = HIGH;
 float sensorTemp = 0;   // filtered temperature from sensor
 
 unsigned int bootCounter;  // boot counter saved in flash memory
-char MAC[20] = {0};                 // same as above, formated into string
+float hiTempSP;         // high temperature setpoint saved in flash memory
+float widthTemp;        // hysteresis width in C saved in flash memory, switch ON point ==hiTempSP - widthTemp
+char MAC[20] = {0};                 // ESP's MAC address
 // char fw_version[30] = {0};          // firmware version string in format: "YYYY-MM-DDTHH:MM (<git hash>)" auto updated
 // const int maxNtpNameLength = 40;
 // ... = {"192.168.0.123", ...            // fake NTP server, with 0 TZ offset
@@ -76,6 +80,7 @@ enum triggerOfs
 };
 
 void pingServer();
+byte hysteresisDO(float temp, float hiTempSP, float width, byte curOutput, bool negativeLogic = false);
 Ticker tmrPing(pingServer, 5000);
 void t1s();
 Ticker tmr1s(t1s, 1000, 0, MILLIS);
@@ -91,6 +96,7 @@ void t12h();
 Ticker tmr12h(t12h, 12 * 60 * 60 * (unsigned long)1000, 0, MILLIS);
 void t24h();
 Ticker tmr24h(t24h, 24 * 60 * 60 * (unsigned long)1000, 0, MILLIS);
+Smoothed <float> tempSensor;
 
 void pingServer()
 {
@@ -214,6 +220,42 @@ void callback(char *topic, byte *message, unsigned int length)
   //     }
   //   }
   // }
+  else if (!strcmp(topicHiTempSP, topic))
+  {
+    char buf[30] = {0};
+    float new_value, cur_value;
+    cur_value = hiTempSP;
+    strncpy(buf, (char *) message, length);
+    if (sscanf(buf, "%f", &new_value))
+    {
+      if (abs(cur_value - new_value) >= 0.09999)
+      {
+        //saveFloatToFlash("hiTempSP", new_value);
+        hiTempSP = new_value;
+        mqttClient.publish(topicHiTempSP, String(hiTempSP).c_str(), true);  // force retain flag
+      }
+    }
+    // if input was garbage, write last good value back
+    if (String(hiTempSP) != String(buf)) mqttClient.publish(topicHiTempSP, String(hiTempSP).c_str(), true);
+  }
+  else if (!strcmp(topicWidthTemp, topic))
+  {
+    char buf[30] = {0};
+    float new_value, cur_value;
+    cur_value = widthTemp;
+    strncpy(buf, (char *) message, length);
+    if (sscanf(buf, "%f", &new_value))
+    {
+      if (abs(cur_value - new_value) >= 0.09999)
+      {
+        //saveFloatToFlash("widthTemp", new_value);
+        widthTemp = new_value;
+        mqttClient.publish(topicWidthTemp, String(widthTemp).c_str(), true);  // force retain flag
+      }
+    }
+    // if input was garbage, write last good value back
+    if (String(widthTemp) != String(buf)) mqttClient.publish(topicWidthTemp, String(widthTemp).c_str(), true);
+  }
   else
   {
     Serial.print("Message arrived on topic: ");
@@ -267,6 +309,8 @@ void reconnect()
       // mqttClient.publish(topicNTP3, NTPs[2], true);
       mqttClient.publish(topicMAC, MAC, true);
       // mqttClient.publish(topicFwVersion, fw_version, true);
+      mqttClient.publish(topicHiTempSP, String(hiTempSP).c_str(), true);
+      mqttClient.publish(topicWidthTemp, String(widthTemp).c_str(), true);
       // Subscribe
       mqttClient.subscribe(topicPong);
       mqttClient.subscribe(topicSrvCmd);
@@ -277,6 +321,8 @@ void reconnect()
       // mqttClient.subscribe(topicNTP1);
       // mqttClient.subscribe(topicNTP2);
       // mqttClient.subscribe(topicNTP3);
+      mqttClient.subscribe(topicHiTempSP);
+      mqttClient.subscribe(topicWidthTemp);
     }
     else
     {
@@ -370,8 +416,8 @@ void setup()
   // getVersionStr(fw_version);
   strncpy(MAC, WiFi.macAddress().c_str(), 20);
 
-  // tempSensor.begin(SMOOTHED_EXPONENTIAL, 10);
-  // // tempSensor.clear();  // sends ESP32 into boot loop
+  tempSensor.begin(SMOOTHED_EXPONENTIAL, 10);
+  // tempSensor.clear();  // sends ESP32 into boot loop
   sensors.begin();
   // preferences.begin(flashNamespace, false);
   // bootCounter = preferences.getUInt("bootCounter", 0);
@@ -403,7 +449,7 @@ void setup()
   {"cycleTimeUs", &topicCycleUs}, {"MAC", &topicMAC}, {"bootCounter", &topicBootCounter}, 
   {"CPU0ResetMsg", &topicCPU0ResetMsg}, {"CPU1ResetMsg", &topicCPU1ResetMsg}, 
   {"temp", &topicTemp}, {"forceCmd", &topicForceCmd}, {"forceStopCmd", &topicForceStopCmd},
-  {"", NULL}};
+  {"hiTempSP", &topicHiTempSP}, {"widthTemp", &topicWidthTemp}, {"", NULL}};
   
   // {"lastNTPSync", &topicLastNTPSync}, {"forceCmd", &topicForceCmd}, 
   // {"forceStopCmd", &topicForceStopCmd}, {"ESP32Time", &topicESP32Time}, 
@@ -505,8 +551,9 @@ void loop()
     #endif
     sensors.requestTemperatures(); 
     sensorTemp = sensors.getTempCByIndex(0);
-    // tempSensor.add(sensorTemp);
-    // sensorTemp = tempSensor.get();
+    tempSensor.add(sensorTemp);
+    sensorTemp = tempSensor.get();
+    outputRelay = hysteresisDO(sensorTemp, hiTempSP, widthTemp, outputRelay, true);  
     #ifdef trace
     //Serial.println("SP: " + String(Setpoint));
     Serial.println("temp: " + String(sensorTemp));
@@ -597,5 +644,13 @@ int cycleTime(const long cycles)
   // Serial.println("cycleCnt: " + String(cycleCnt));
   res = (unsigned long) ((new_us - prev_us) / cycles);
   prev_us = new_us;
+  return res;
+}
+
+byte hysteresisDO(float temp, float hiTempSP, float width, byte curOutput, bool negativeLogic)
+{
+  byte res = curOutput;
+  if ((curOutput == (LOW ^ negativeLogic)) && (temp < hiTempSP - width)) res = HIGH ^ negativeLogic;
+  if ((curOutput == (HIGH ^ negativeLogic)) && (temp > hiTempSP)) res = LOW ^ negativeLogic;
   return res;
 }
