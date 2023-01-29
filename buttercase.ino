@@ -81,6 +81,9 @@ enum triggerOfs
 
 void pingServer();
 byte hysteresisDO(float temp, float hiTempSP, float width, byte curOutput, bool negativeLogic = false);
+void saveFloatToFlash(const char *name, float value);
+void saveUIntToFlash(const char *name, unsigned int value);
+void saveStringToFlash(const char *name, const char* value);
 Ticker tmrPing(pingServer, 5000);
 void t1s();
 Ticker tmr1s(t1s, 1000, 0, MILLIS);
@@ -180,24 +183,24 @@ void callback(char *topic, byte *message, unsigned int length)
   //     mqttClient.publish(topicSetDateTime, timestampFmt, true);
   //   }
   // }
-  // else if (!strcmp(topicBootCounter, topic))
-  // {
-  //   char buf[30] = {0};
-  //   unsigned int new_value, cur_value;
-  //   cur_value = bootCounter;
-  //   strncpy(buf, (char *) message, length);
-  //   if (sscanf(buf, "%d", &new_value))
-  //   {
-  //     if (cur_value != new_value)
-  //     {
-  //       saveUIntToFlash("bootCounter", new_value);
-  //       bootCounter = new_value;
-  //       mqttClient.publish(topicBootCounter, String(bootCounter).c_str(), true);  // force retain flag
-  //     }
-  //   }
-  //   // if input was garbage, write last good value back
-  //   if (String(bootCounter) != String(buf)) mqttClient.publish(topicBootCounter, String(bootCounter).c_str(), true);
-  // }
+  else if (!strcmp(topicBootCounter, topic))
+  {
+    char buf[30] = {0};
+    unsigned int new_value, cur_value;
+    cur_value = bootCounter;
+    strncpy(buf, (char *) message, length);
+    if (sscanf(buf, "%d", &new_value))
+    {
+      if (cur_value != new_value)
+      {
+        saveUIntToFlash("bootCounter", new_value);
+        bootCounter = new_value;
+        mqttClient.publish(topicBootCounter, String(bootCounter).c_str(), true);  // force retain flag
+      }
+    }
+    // if input was garbage, write last good value back
+    if (String(bootCounter) != String(buf)) mqttClient.publish(topicBootCounter, String(bootCounter).c_str(), true);
+  }
   // else if (!strncmp(topicNTP1, topic, strlen(topicNTP1) - 1))  // matches "*/NTP"
   // {
   //   char buf[maxNtpNameLength+1] = {0};
@@ -230,7 +233,7 @@ void callback(char *topic, byte *message, unsigned int length)
     {
       if (abs(cur_value - new_value) >= 0.09999)
       {
-        //saveFloatToFlash("hiTempSP", new_value);
+        saveFloatToFlash("hiTempSP", new_value);
         hiTempSP = new_value;
         mqttClient.publish(topicHiTempSP, String(hiTempSP).c_str(), true);  // force retain flag
       }
@@ -248,7 +251,7 @@ void callback(char *topic, byte *message, unsigned int length)
     {
       if (abs(cur_value - new_value) >= 0.09999)
       {
-        //saveFloatToFlash("widthTemp", new_value);
+        saveFloatToFlash("widthTemp", new_value);
         widthTemp = new_value;
         mqttClient.publish(topicWidthTemp, String(widthTemp).c_str(), true);  // force retain flag
       }
@@ -419,9 +422,9 @@ void setup()
   tempSensor.begin(SMOOTHED_EXPONENTIAL, 10);
   // tempSensor.clear();  // sends ESP32 into boot loop
   sensors.begin();
-  // preferences.begin(flashNamespace, false);
-  // bootCounter = preferences.getUInt("bootCounter", 0);
-  // bootCounter++;
+  preferences.begin(flashNamespace, false);
+  bootCounter = preferences.getUInt("bootCounter", 0);
+  bootCounter++;
   // for (int i=0; i<3; i++)
   // {
   //   sprintf(buf, "NTP%d", i+1);
@@ -432,8 +435,12 @@ void setup()
   //     strncpy(NTPs[i], s.c_str(), maxNtpNameLength);
   //   }
   // }
-  // preferences.putUInt("bootCounter", bootCounter);
-  // preferences.end();
+  preferences.putUInt("bootCounter", bootCounter);
+  hiTempSP = preferences.getFloat("hiTempSP", 0);
+  widthTemp = preferences.getFloat("widthTemp", 0);
+  preferences.putFloat("hiTempSP", hiTempSP);
+  preferences.putFloat("widthTemp", widthTemp);
+  preferences.end();
   delay(1000);
 
   cycleCnt = 0;
@@ -654,3 +661,25 @@ byte hysteresisDO(float temp, float hiTempSP, float width, byte curOutput, bool 
   if ((curOutput == (HIGH ^ negativeLogic)) && (temp > hiTempSP)) res = LOW ^ negativeLogic;
   return res;
 }
+
+void saveFloatToFlash(const char *name, float value)
+{
+  preferences.begin(flashNamespace, false);
+  preferences.putFloat(name, value);
+  preferences.end();
+}
+
+void saveUIntToFlash(const char *name, unsigned int value)
+{
+  preferences.begin(flashNamespace, false);
+  preferences.putUInt(name, value);
+  preferences.end();
+}
+
+void saveStringToFlash(const char *name, const char* value)
+{
+  preferences.begin(flashNamespace, false);
+  preferences.putString(name, value);
+  preferences.end();
+}
+
