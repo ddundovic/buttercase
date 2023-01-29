@@ -51,14 +51,16 @@ char *topicMAC;                              // ESP MAC address - unique ID (for
 // char *topicFwVersion;                        // ESP firmware version string in format: "YYYY-MM-DDTHH:MM (<git hash>)"
 char *topicHiTempSP;                         // high temperature setpoint
 char *topicWidthTemp;                        // hysteresis width in C
+char *topicRelaySwitchCounter;               // relay switch counter
 
 unsigned long state, cycleCnt, cycleTimeUs, lastMilisSent, triggers = 0, nextState = 0;
-byte outputRelay = HIGH;
+byte outputRelay = HIGH, nextOutputRelay = HIGH;
 float sensorTemp = 0;   // filtered temperature from sensor
 
 unsigned int bootCounter;  // boot counter saved in flash memory
 float hiTempSP;         // high temperature setpoint saved in flash memory
 float widthTemp;        // hysteresis width in C saved in flash memory, switch ON point ==hiTempSP - widthTemp
+unsigned int relaySwitchCnt;        // number of times relay is being energized
 char MAC[20] = {0};                 // ESP's MAC address
 // char fw_version[30] = {0};          // firmware version string in format: "YYYY-MM-DDTHH:MM (<git hash>)" auto updated
 // const int maxNtpNameLength = 40;
@@ -84,6 +86,7 @@ byte hysteresisDO(float temp, float hiTempSP, float width, byte curOutput, bool 
 void saveFloatToFlash(const char *name, float value);
 void saveUIntToFlash(const char *name, unsigned int value);
 void saveStringToFlash(const char *name, const char* value);
+void updateRelaySwitchCnt(byte curOutput, byte nextOutput, bool negativeLogic);
 Ticker tmrPing(pingServer, 5000);
 void t1s();
 Ticker tmr1s(t1s, 1000, 0, MILLIS);
@@ -133,7 +136,7 @@ void callback(char *topic, byte *message, unsigned int length)
   {
     if (*message == 0x31)  // ASCII for "1"
     {
-      outputRelay = LOW;
+      nextOutputRelay = LOW;
       mqttClient.publish(topicForceCmd, "0");
     }
   }
@@ -141,7 +144,7 @@ void callback(char *topic, byte *message, unsigned int length)
   {
    if (*message == 0x31)  // ASCII for "1"
     {
-      outputRelay = HIGH;
+      nextOutputRelay = HIGH;
       mqttClient.publish(topicForceStopCmd, "0");
     }
   }
@@ -200,6 +203,24 @@ void callback(char *topic, byte *message, unsigned int length)
     }
     // if input was garbage, write last good value back
     if (String(bootCounter) != String(buf)) mqttClient.publish(topicBootCounter, String(bootCounter).c_str(), true);
+  }
+  else if (!strcmp(topicRelaySwitchCounter, topic))
+  {
+    char buf[30] = {0};
+    unsigned int new_value, cur_value;
+    cur_value = relaySwitchCnt;
+    strncpy(buf, (char *) message, length);
+    if (sscanf(buf, "%d", &new_value))
+    {
+      if (cur_value != new_value)
+      {
+        saveUIntToFlash("relaySwitchCnt", new_value);
+        relaySwitchCnt = new_value;
+        mqttClient.publish(topicRelaySwitchCounter, String(relaySwitchCnt).c_str(), true);  // force retain flag
+      }
+    }
+    // if input was garbage, write last good value back
+    if (String(relaySwitchCnt) != String(buf)) mqttClient.publish(topicRelaySwitchCounter, String(relaySwitchCnt).c_str(), true);
   }
   // else if (!strncmp(topicNTP1, topic, strlen(topicNTP1) - 1))  // matches "*/NTP"
   // {
@@ -314,6 +335,7 @@ void reconnect()
       // mqttClient.publish(topicFwVersion, fw_version, true);
       mqttClient.publish(topicHiTempSP, String(hiTempSP).c_str(), true);
       mqttClient.publish(topicWidthTemp, String(widthTemp).c_str(), true);
+      mqttClient.publish(topicRelaySwitchCounter, String(relaySwitchCnt).c_str(), true);
       // Subscribe
       mqttClient.subscribe(topicPong);
       mqttClient.subscribe(topicSrvCmd);
@@ -326,6 +348,7 @@ void reconnect()
       // mqttClient.subscribe(topicNTP3);
       mqttClient.subscribe(topicHiTempSP);
       mqttClient.subscribe(topicWidthTemp);
+      mqttClient.subscribe(topicRelaySwitchCounter);
     }
     else
     {
@@ -440,6 +463,8 @@ void setup()
   widthTemp = preferences.getFloat("widthTemp", 0);
   preferences.putFloat("hiTempSP", hiTempSP);
   preferences.putFloat("widthTemp", widthTemp);
+  relaySwitchCnt = preferences.getUInt("relaySwitchCnt", 0);
+  preferences.putUInt("relaySwitchCnt", relaySwitchCnt);
   preferences.end();
   delay(1000);
 
@@ -456,8 +481,10 @@ void setup()
   {"cycleTimeUs", &topicCycleUs}, {"MAC", &topicMAC}, {"bootCounter", &topicBootCounter}, 
   {"CPU0ResetMsg", &topicCPU0ResetMsg}, {"CPU1ResetMsg", &topicCPU1ResetMsg}, 
   {"temp", &topicTemp}, {"forceCmd", &topicForceCmd}, {"forceStopCmd", &topicForceStopCmd},
-  {"hiTempSP", &topicHiTempSP}, {"widthTemp", &topicWidthTemp}, {"", NULL}};
+  {"hiTempSP", &topicHiTempSP}, {"widthTemp", &topicWidthTemp}, 
+  {"relaySwitchCnt", &topicRelaySwitchCounter}, {"", NULL}};
   
+
   // {"lastNTPSync", &topicLastNTPSync}, {"forceCmd", &topicForceCmd}, 
   // {"forceStopCmd", &topicForceStopCmd}, {"ESP32Time", &topicESP32Time}, 
   // {"setDateTimeCmd", &topicSetDateTime}, {"NTP1", &topicNTP1}, {"NTP2", &topicNTP2}, {"NTP3", &topicNTP3}, 
@@ -560,11 +587,8 @@ void loop()
     sensorTemp = sensors.getTempCByIndex(0);
     tempSensor.add(sensorTemp);
     sensorTemp = tempSensor.get();
-    outputRelay = hysteresisDO(sensorTemp, hiTempSP, widthTemp, outputRelay, true);  
+    nextOutputRelay = hysteresisDO(sensorTemp, hiTempSP, widthTemp, outputRelay, true);  
     #ifdef trace
-    //Serial.println("SP: " + String(Setpoint));
-    Serial.println("temp: " + String(sensorTemp));
-    Serial.println("outputRelay: " + String(outputRelay));
     #endif
     mqttClient.publish(topicState, String(state).c_str());
     mqttClient.publish(topicStateStr, stateStr(state).c_str());
@@ -637,6 +661,8 @@ void loop()
     break;
   }
   // write outputs
+  updateRelaySwitchCnt(outputRelay, nextOutputRelay, true);
+  outputRelay = nextOutputRelay;
   digitalWrite(RELAY, outputRelay);
   triggers = 0; // clear triggers
   cycleCnt++;
@@ -683,3 +709,13 @@ void saveStringToFlash(const char *name, const char* value)
   preferences.end();
 }
 
+void updateRelaySwitchCnt(byte curOutput, byte nextOutput, bool negativeLogic)
+{
+  
+  if ((curOutput == (LOW ^ negativeLogic)) && (nextOutput == (HIGH ^ negativeLogic)))
+  {
+    relaySwitchCnt++;
+    saveUIntToFlash("relaySwitchCnt", relaySwitchCnt);
+    mqttClient.publish(topicRelaySwitchCounter, String(relaySwitchCnt).c_str(), true);  // force retain flag
+  }
+}
