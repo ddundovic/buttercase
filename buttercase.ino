@@ -476,13 +476,18 @@ void setup()
     const char *base;
     char **topic;
   } Topic;
-  Topic topics[] = {{"ping", &topicPing}, {"pong", &topicPong}, {"srv_cmd", &topicSrvCmd}, 
-  {"srv_cmd_ack", &topicSrvCmdAck}, {"state", &topicState}, {"stateStr", &topicStateStr}, 
-  {"cycleTimeUs", &topicCycleUs}, {"MAC", &topicMAC}, {"bootCounter", &topicBootCounter}, 
-  {"CPU0ResetMsg", &topicCPU0ResetMsg}, {"CPU1ResetMsg", &topicCPU1ResetMsg}, 
-  {"temp", &topicTemp}, {"forceCmd", &topicForceCmd}, {"forceStopCmd", &topicForceStopCmd},
-  {"hiTempSP", &topicHiTempSP}, {"widthTemp", &topicWidthTemp}, 
-  {"relaySwitchCnt", &topicRelaySwitchCounter}, {"", NULL}};
+  // For easier integration into Telegraf  
+  // start base with:
+  // "int/" - for integers
+  // "float/" - for floats
+  // "str/" - for C style strings
+  Topic topics[] = {{"int/ping", &topicPing}, {"int/pong", &topicPong}, {"int/srv_cmd", &topicSrvCmd}, 
+  {"int/srv_cmd_ack", &topicSrvCmdAck}, {"int/state", &topicState}, {"str/stateStr", &topicStateStr}, 
+  {"int/cycleTimeUs", &topicCycleUs}, {"str/MAC", &topicMAC}, {"int/bootCounter", &topicBootCounter}, 
+  {"str/CPU0ResetMsg", &topicCPU0ResetMsg}, {"str/CPU1ResetMsg", &topicCPU1ResetMsg}, 
+  {"float/temp", &topicTemp}, {"str/forceCmd", &topicForceCmd}, {"str/forceStopCmd", &topicForceStopCmd},
+  {"float/hiTempSP", &topicHiTempSP}, {"float/widthTemp", &topicWidthTemp}, 
+  {"int/relaySwitchCnt", &topicRelaySwitchCounter}, {"", NULL}};
   
 
   // {"lastNTPSync", &topicLastNTPSync}, {"forceCmd", &topicForceCmd}, 
