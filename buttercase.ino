@@ -5,6 +5,8 @@
 #include <DallasTemperature.h>
 #include <Smoothed.h>
 #include <Preferences.h>
+#include <ESP8266HTTPClient.h>
+#include <ArduinoJson.h>
 
 #define CYCLES 50000
 #define trace 1         // trace prints on/off
@@ -25,6 +27,9 @@ PubSubClient mqttClient(wifiClient);
 Preferences preferences;
 OneWire oneWire(oneWireBus);
 DallasTemperature sensors(&oneWire);
+int httpCode; 
+HTTPClient http;
+DynamicJsonDocument doc(1024);
 
 const char *flashNamespace = "data";         // flash memory namespace
 const char *device = "esp8266";              // device part of topic name
@@ -48,7 +53,9 @@ char *topicCPU1ResetMsg;                     // CPU1 last reset message
 // char *topicNTP2;                             // NTP2
 // char *topicNTP3;                             // NTP3
 char *topicMAC;                              // ESP MAC address - unique ID (formatted string)
-// char *topicFwVersion;                        // ESP firmware version string in format: "YYYY-MM-DDTHH:MM (<git hash>)"
+char *topicFwVersion;                        // ESP32 firmware version string in format: "<git hash>"
+char *topicFwTimestamp;                      // ESP32 firmware timestamp string in format: "YYYY-MM-DDTHH:MM"
+char *topicMsgToMQTT;                        // topic for sending messages to MQTT
 char *topicHiTempSP;                         // high temperature setpoint
 char *topicWidthTemp;                        // hysteresis width in C
 char *topicRelaySwitchCounter;               // relay switch counter
@@ -62,7 +69,16 @@ float hiTempSP;         // high temperature setpoint saved in flash memory
 float widthTemp;        // hysteresis width in C saved in flash memory, switch ON point ==hiTempSP - widthTemp
 unsigned int relaySwitchCnt;        // number of times relay is being energized
 char MAC[20] = {0};                 // ESP's MAC address
-// char fw_version[30] = {0};          // firmware version string in format: "YYYY-MM-DDTHH:MM (<git hash>)" auto updated
+char fw_version[30] = {0};          // firmware version string in format: "<git hash>" auto updated
+char fw_timestamp[30] = {0};        // firmware timestamp in format: "YYYY-MM-DDTHH:MM" auto updated
+char fw_version_new[30] = {0};      // new firmware version string, ready for OTA update
+char fw_timestamp_new[30] = {0};    // new firmware timestamp in format: "YYYY-MM-DDTHH:MM" auto updated
+int newFwCheckTimer = 0;            // counts minutes until next check for new fw update
+const int newFwCheckInterval = 13;  // new fw update check interval in minutes
+char msg[200] = {0};                // message to MQTT
+// Global OTA variables
+long totalLength;       //total size of firmware
+long currentLength = 0; //current size of written firmware
 // const int maxNtpNameLength = 40;
 // ... = {"192.168.0.123", ...            // fake NTP server, with 0 TZ offset
 // 3 NTP servers saved in flash memory
@@ -72,6 +88,8 @@ char resetMsgs[2][128];
 int resetCodes[2];
 enum triggerOfs
 {
+  _t10ms,
+  _t100ms,
   _t1s,
   _t10s,
   _t1m,
@@ -85,9 +103,15 @@ void pingServer();
 byte hysteresisDO(float temp, float hiTempSP, float width, byte curOutput, bool negativeLogic = false);
 void saveFloatToFlash(const char *name, float value);
 void saveUIntToFlash(const char *name, unsigned int value);
+void saveULongToFlash(const char *name, unsigned long value);
+void saveBytesToFlash(const char *name, const void *buf, int len);
 void saveStringToFlash(const char *name, const char* value);
 void updateRelaySwitchCnt(byte curOutput, byte nextOutput, bool negativeLogic);
 Ticker tmrPing(pingServer, 5000);
+void t10ms();
+Ticker tmr10ms(t10ms, 10, 0, MILLIS);
+void t100ms();
+Ticker tmr100ms(t100ms, 100, 0, MILLIS);
 void t1s();
 Ticker tmr1s(t1s, 1000, 0, MILLIS);
 void t10s();
@@ -103,6 +127,7 @@ Ticker tmr12h(t12h, 12 * 60 * 60 * (unsigned long)1000, 0, MILLIS);
 void t24h();
 Ticker tmr24h(t24h, 24 * 60 * 60 * (unsigned long)1000, 0, MILLIS);
 Smoothed <float> tempSensor;
+String url; // url String will be used to store the final generated URL
 
 void pingServer()
 {
@@ -116,6 +141,8 @@ void pingServer()
   // }
 }
 
+void t10ms() { triggers |= (unsigned long)1 << _t10ms; }
+void t100ms() { triggers |= (unsigned long)1 << _t100ms; }
 void t1s() { triggers |= (unsigned long)1 << _t1s; }
 void t10s() { triggers |= (unsigned long)1 << _t10s; }
 void t1m() { triggers |= (unsigned long)1 << _t1m; }
@@ -127,6 +154,7 @@ int triggered(int trigger) { return triggers & (unsigned long)1 << trigger; }
 
 void callback(char *topic, byte *message, unsigned int length)
 {
+  char publishTopic[50] = {0};
   if (!strcmp(topicPong, topic))
   {
     // pong received
@@ -321,8 +349,7 @@ void reconnect()
     retry++;
     Serial.print("Attempting MQTT connection...");
     // Attempt to connect
-    // TODO create client name from boardtype + MAC
-    if (mqttClient.connect("ESP8266Client", mqttUser, mqttPassword))
+    if (mqttClient.connect(mqttClientName, mqttUser, mqttPassword))
     {
       Serial.println("connected");
       // initial publish
@@ -332,7 +359,8 @@ void reconnect()
       // mqttClient.publish(topicNTP2, NTPs[1], true);
       // mqttClient.publish(topicNTP3, NTPs[2], true);
       mqttClient.publish(topicMAC, MAC, true);
-      // mqttClient.publish(topicFwVersion, fw_version, true);
+      mqttClient.publish(topicFwVersion, fw_version, true);
+      mqttClient.publish(topicFwTimestamp, fw_timestamp, true);
       mqttClient.publish(topicHiTempSP, String(hiTempSP).c_str(), true);
       mqttClient.publish(topicWidthTemp, String(widthTemp).c_str(), true);
       mqttClient.publish(topicRelaySwitchCounter, String(relaySwitchCnt).c_str(), true);
@@ -441,6 +469,7 @@ void setup()
   // tzset();
   // getVersionStr(fw_version);
   strncpy(MAC, WiFi.macAddress().c_str(), 20);
+  snprintf(mqttClientName, sizeof(mqttClientName), "%s-%s", device, MAC);
 
   tempSensor.begin(SMOOTHED_EXPONENTIAL, 10);
   // tempSensor.clear();  // sends ESP32 into boot loop
@@ -448,6 +477,7 @@ void setup()
   preferences.begin(flashNamespace, false);
   bootCounter = preferences.getUInt("bootCounter", 0);
   bootCounter++;
+  preferences.putUInt("bootCounter", bootCounter);
   // for (int i=0; i<3; i++)
   // {
   //   sprintf(buf, "NTP%d", i+1);
@@ -458,13 +488,18 @@ void setup()
   //     strncpy(NTPs[i], s.c_str(), maxNtpNameLength);
   //   }
   // }
-  preferences.putUInt("bootCounter", bootCounter);
   hiTempSP = preferences.getFloat("hiTempSP", 0);
   widthTemp = preferences.getFloat("widthTemp", 0);
   preferences.putFloat("hiTempSP", hiTempSP);
   preferences.putFloat("widthTemp", widthTemp);
   relaySwitchCnt = preferences.getUInt("relaySwitchCnt", 0);
   preferences.putUInt("relaySwitchCnt", relaySwitchCnt);
+  s = preferences.getString("fw_version", String(""));
+  if (s == "") preferences.putString("fw_version", s);  // run only once when variable is created in prefs
+  strncpy(fw_version, s.c_str(), 30-1);
+  s = preferences.getString("fw_timestamp", String(""));
+  if (s == "") preferences.putString("fw_timestamp", s);  // run only once when variable is created in prefs
+  strncpy(fw_timestamp, s.c_str(), 30-1);
   preferences.end();
   delay(1000);
 
@@ -487,13 +522,15 @@ void setup()
   {"str/CPU0ResetMsg", &topicCPU0ResetMsg}, {"str/CPU1ResetMsg", &topicCPU1ResetMsg}, 
   {"float/temp", &topicTemp}, {"str/forceCmd", &topicForceCmd}, {"str/forceStopCmd", &topicForceStopCmd},
   {"float/hiTempSP", &topicHiTempSP}, {"float/widthTemp", &topicWidthTemp}, 
-  {"int/relaySwitchCnt", &topicRelaySwitchCounter}, {"", NULL}};
+  {"str/fwVersion", &topicFwVersion}, 
+  {"str/fwTimestamp", &topicFwTimestamp}, {"str/message", &topicMsgToMQTT}, 
+  {"int/relaySwitchCnt", &topicRelaySwitchCounter}, 
+  {"", NULL}};
   
 
   // {"lastNTPSync", &topicLastNTPSync}, {"forceCmd", &topicForceCmd}, 
   // {"forceStopCmd", &topicForceStopCmd}, {"ESP32Time", &topicESP32Time}, 
   // {"setDateTimeCmd", &topicSetDateTime}, {"NTP1", &topicNTP1}, {"NTP2", &topicNTP2}, {"NTP3", &topicNTP3}, 
-  //  {"fwVersion", &topicFwVersion}, {"", NULL}};
 
   int i = 0;
   while (strcmp(topics[i].base, ""))
@@ -504,6 +541,8 @@ void setup()
     i++;
   }
 
+  tmr10ms.start();
+  tmr100ms.start();
   tmr1s.start();
   tmr10s.start();
   tmr1m.start();
@@ -562,7 +601,6 @@ void s101()
 
 void s200()
 {
-  int res = 0, totRes = 0;
   if (tmrPing.state() == STOPPED)
     tmrPing.start();
   // TODO regulate temp.
@@ -571,6 +609,8 @@ void s200()
 void updateTimers()
 {
   tmrPing.update();
+  tmr10ms.update();
+  tmr100ms.update();
   tmr1s.update();
   tmr10s.update();
   tmr1m.update();
@@ -586,6 +626,8 @@ void loop()
   if (triggered(_t10s))
   {
     #ifdef trace
+//    Serial.println("*********************************");
+    Serial.printf("fw_ver: %s fw_timestamp: %s\n", fw_version, fw_timestamp);
     Serial.println("state: " + String(state));
     #endif
     sensors.requestTemperatures(); 
@@ -608,6 +650,13 @@ void loop()
     mqttClient.publish(topicCPU0ResetMsg, resetMsgs[0]);
     mqttClient.publish(topicCPU1ResetMsg, resetMsgs[1]);
     // // message_to_whatsapp("ESP32: " + rtc.getTime("%Y-%m-%dT%H:%M:%S"));
+    if (!newFwCheckTimer)   // check for new fw update every <newFwCheckInterval> minutes
+    {
+      String fwURL = checkForNewFW();
+      Serial.printf("fwURL=%s\n", fwURL.c_str());
+      if (fwURL != "") doOTA(fwURL);
+    }
+    newFwCheckTimer = (newFwCheckTimer + 1) % newFwCheckInterval;
   }
   if (state >= 101)
   {
@@ -707,10 +756,24 @@ void saveUIntToFlash(const char *name, unsigned int value)
   preferences.end();
 }
 
+void saveULongToFlash(const char *name, unsigned long value)
+{
+  preferences.begin(flashNamespace, false);
+  preferences.putULong(name, value);
+  preferences.end();
+}
+
 void saveStringToFlash(const char *name, const char* value)
 {
   preferences.begin(flashNamespace, false);
   preferences.putString(name, value);
+  preferences.end();
+}
+
+void saveBytesToFlash(const char *name, const void *buf, int len)
+{
+  preferences.begin(flashNamespace, false);
+  preferences.putBytes(name, buf, len);
   preferences.end();
 }
 
@@ -723,4 +786,244 @@ void updateRelaySwitchCnt(byte curOutput, byte nextOutput, bool negativeLogic)
     saveUIntToFlash("relaySwitchCnt", relaySwitchCnt);
     mqttClient.publish(topicRelaySwitchCounter, String(relaySwitchCnt).c_str(), true);  // force retain flag
   }
+}
+
+String urlencode(String str) // Function used for encoding the url
+{
+  String encodedString = "";
+  char c;
+  char code0;
+  char code1;
+  char code2;
+  for (int i = 0; i < str.length(); i++)
+  {
+    c = str.charAt(i);
+    if (c == ' ')
+    {
+      encodedString += '+';
+    }
+    else if (isalnum(c))
+    {
+      encodedString += c;
+    }
+    else
+    {
+      code1 = (c & 0xf) + '0';
+      if ((c & 0xf) > 9)
+      {
+        code1 = (c & 0xf) - 10 + 'A';
+      }
+      c = (c >> 4) & 0xf;
+      code0 = c + '0';
+      if (c > 9)
+      {
+        code0 = c - 10 + 'A';
+      }
+      code2 = '\0';
+      encodedString += '%';
+      encodedString += code0;
+      encodedString += code1;
+      // encodedString+=code2;
+    }
+    yield();
+  }
+  return encodedString;
+}
+
+String checkForNewFW()
+{
+  HTTPClient http;
+  fw_version_new[0] = '\0';
+  String res = "";
+  url = otaServerAdr + urlencode(MAC) + "?fw_ver=" + urlencode(fw_version);
+  Serial.printf("http.begin(%s)\n", url.c_str());
+  http.begin(wifiClient, url);
+  httpCode = http.GET();
+  if (httpCode == 200)
+  {
+    String response = http.getString();
+    #ifdef trace
+    Serial.println(response);
+    #endif
+    DeserializationError err = deserializeJson(doc, response);
+    if (!err)
+    {
+      // no error in deserialization, check if fw_ver is different than the one stored in prefs
+      // if it is construct URL for fw DL and put it in res, otherwise res=""
+      strncpy(fw_version_new, (const char *) (doc["fw_ver"]), 30-1);
+      strncpy(fw_timestamp_new, (const char *) (doc["fw_timestamp"]), 30-1);
+      if (strcmp(fw_version, fw_version_new))
+        {
+          snprintf(msg, sizeof(msg), "New firmware found! Old version: %s (%s). New version: %s (%s).", 
+            fw_version, fw_timestamp, fw_version_new, fw_timestamp_new);
+          mqttClient.publish(topicMsgToMQTT, msg, true);  // force retain flag
+          res = otaServerAdr + fwDlSuffix + (const char *) (doc["dev_group"]) + fwVerParamSuffix + fw_version_new;
+        }
+        else
+          {
+            snprintf(msg, sizeof(msg), "No new firmware found!"); 
+            mqttClient.publish(topicMsgToMQTT, msg, true);  // force retain flag
+          }
+    }
+    else
+    {
+      // error in deserialization, print error message to Serial and MQTT topic, set res to ""
+      snprintf(msg, sizeof(msg), "Deserialization error! err=%d", err); 
+      mqttClient.publish(topicMsgToMQTT, msg, true);  // force retain flag
+      #ifdef trace
+      Serial.printf("%s\n", msg);
+      #endif
+    }
+  }
+  else
+    { 
+      snprintf(msg, sizeof(msg), "Error getting OTA info. HTTP code=%d", httpCode); 
+      mqttClient.publish(topicMsgToMQTT, msg, true);  // force retain flag
+      #ifdef trace
+      Serial.printf("%s\n", msg);
+      #endif
+    }
+  http.end();
+  return res;
+}
+
+// Function to update firmware incrementally
+// Buffer is declared to be 128 so chunks of 128 bytes
+// from firmware is written to device until server closes
+void updateFirmware(uint8_t *data, size_t len)
+{
+  static long callNo = 0;
+  callNo++;
+  Update.write(data, len);
+  currentLength += len; 
+  // Print dots while waiting for update to finish
+  // TODO flash LED ...
+  Serial.print('.');
+  if (!(callNo%100)) Serial.println("");
+  // if current length of written firmware is not equal to total firmware size, repeat
+  if(currentLength != totalLength) return;
+  bool success = Update.end(true);
+  if (success)
+  {
+    saveStringToFlash("fw_version", fw_version_new);
+    saveStringToFlash("fw_timestamp", fw_timestamp_new);
+    snprintf(msg, sizeof(msg), "Update success! Total Size: %u. Rebooting...", currentLength); 
+    mqttClient.publish(topicMsgToMQTT, msg, true);  // force retain flag
+    Serial.printf("\n%s\n", msg);
+  }
+  else
+  {
+    snprintf(msg, sizeof(msg), "Update failed! Total Size: %u. Rebooting...", currentLength); 
+    mqttClient.publish(topicMsgToMQTT, msg, true);  // force retain flag
+    Serial.printf("\n%s\n", msg);
+  }
+  mqttClient.flush();
+  String s;
+  preferences.begin(flashNamespace, false);
+  s = preferences.getString("fw_version", String(""));
+  if (s == "") preferences.putString("fw_version", s);  // run only once when variable is created in prefs
+  strncpy(fw_version, s.c_str(), 30-1);
+  s = preferences.getString("fw_timestamp", String(""));
+  if (s == "") preferences.putString("fw_timestamp", s);  // run only once when variable is created in prefs
+  strncpy(fw_timestamp, s.c_str(), 30-1);
+  preferences.end();
+  Serial.printf("\nfw_version: %s\n", fw_version);
+  Serial.printf("fw_timestamp: %s\n", fw_timestamp);
+
+  delay(2000);
+  // Restart ESP32 to see changes 
+  ESP.restart(); 
+}
+
+void doOTA(String fwURL)
+{
+  // Connect to external web server
+  http.begin(wifiClient, fwURL);
+  // Get file, just to check if each reachable
+  int resp = http.GET();
+  // If file is reachable, start downloading
+  if (resp == 200)
+  {
+    // get length of document (is -1 when Server sends no Content-Length header)
+    totalLength = http.getSize();
+    Serial.printf("totalLength=%d\n", totalLength);
+    long len = totalLength;
+    // this is required to start firmware update process
+    // Update.begin(UPDATE_SIZE_UNKNOWN);  // WON'T WORK ON ESP8266!!!
+    Update.begin(totalLength);
+    Serial.printf("FW Size: %u\n",totalLength);
+    // create buffer for read
+    uint8_t buff[128] = { 0 };
+    // get tcp stream
+    WiFiClient * stream = http.getStreamPtr();
+    // read all data from server
+    Serial.println("Updating firmware...");
+    while (http.connected() && (len > 0 || len == -1)) 
+    {
+      // get available data size
+      size_t size = stream->available();
+      if (size) {
+        // read up to 128 byte
+        int c = stream->readBytes(buff, ((size > sizeof(buff)) ? sizeof(buff) : size));
+        // pass to function
+        updateFirmware(buff, c);
+        if (len > 0) {
+            len -= c;
+        }
+      }
+      delay(1);
+    }
+  }
+}
+
+void checkNVS()
+{
+  int bootCounter;
+  preferences.begin(flashNamespace, false);
+  bootCounter = preferences.getUInt("bootCounter", 100);
+  Serial.printf("bootCounter before ++: %d\n", bootCounter);
+  bootCounter++;
+  preferences.putUInt("bootCounter", bootCounter);
+  bootCounter = 0;
+  bootCounter = preferences.getUInt("bootCounter", 100);
+  Serial.printf("bootCounter after ++: %d\n", bootCounter);
+  preferences.end();
+}
+
+void http_ping()
+{
+  HTTPClient http;
+  url = otaServerAdr + "ping";
+  http.begin(wifiClient, url);
+  httpCode = http.GET();
+  if (httpCode == 200)
+  {
+    String response = http.getString();
+    #ifdef trace
+    Serial.println(response);
+    #endif
+    DeserializationError err = deserializeJson(doc, response);
+    if (!err)
+    {
+      // no error in deserialization, check if fw_ver is different than the one stored in prefs
+      // if it is construct URL for fw DL and put it in res, otherwise res=""
+//      Serial.printf("Ping sent. Response: %s\n", doc["response"]);
+    }
+    else
+    {
+      // error in deserialization, print error message to Serial and MQTT topic, set res to ""
+      snprintf(msg, sizeof(msg), "Deserialization error! err=%d", err); 
+      #ifdef trace
+      Serial.printf("%s\n", msg);
+      #endif
+    }
+  }
+  else
+    { 
+      snprintf(msg, sizeof(msg), "Error getting response to ping. HTTP code=%d", httpCode); 
+      #ifdef trace
+      Serial.printf("%s\n", msg);
+      #endif
+    }
+  http.end();
 }

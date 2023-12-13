@@ -1,6 +1,7 @@
 #include <Arduino.h>
 const char *mqttUser = "dundo";
 const char *mqttPassword = "YEGv7UGPjqM30P4bfkZ9";
+char mqttClientName[50] = {0};                 // name used to connect to MQTT broker
 const char *location = "kitchen";           // location part of topic name
 
 const int NUM_NETWORKS = 2; // 3
@@ -21,6 +22,15 @@ const char *password[NUM_NETWORKS] = {"dUnDoViC", "R0JM3KT4B"};
 // dundovic.com
 // TODO define array of domains, use several dynamic DNS aliases (more than 1 provider)
 String mqttBrokerAdr = "dundovic.com";
+
+// TODO define array of domains, use several dynamic DNS aliases (more than 1 provider)
+String otaServerAdr = "http://dundovic.com/ota/";
+
+// suffix to add on otaServerAdr for firmware download endpoint (+ "<device group>" + "?fw_ver=<new_fw_str>")
+String fwDlSuffix = "fw_dl/";
+
+// suffix to add on otaServerAdr + fwDlSuffix + "<device group>" (+ <new_fw_str>")
+String fwVerParamSuffix = "?fw_ver=";
 
 // WhatsApp section
 String apiKey = "114137";              // Add your Token number that bot has sent you on WhatsApp messenger
