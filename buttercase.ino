@@ -626,7 +626,7 @@ void loop()
   if (triggered(_t10s))
   {
     #ifdef trace
-//    Serial.println("*********************************");
+    Serial.println("*********************************");
     Serial.printf("fw_ver: %s fw_timestamp: %s\n", fw_version, fw_timestamp);
     Serial.println("state: " + String(state));
     #endif
@@ -644,6 +644,7 @@ void loop()
   if (triggered(_t1m))
   {
     #ifdef trace
+    // Serial.println("_t1m");
     // Serial.println(rtc.getTime("%Y-%m-%dT%H:%M:%S"));
     // printLocalTime();
     #endif
