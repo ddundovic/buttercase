@@ -1,5 +1,5 @@
 {
-  "device_group": "esp8266_1",
+  "device_group": "esp8266_buttercase",
   "fw_ver": "xxx",
   "fw_timestamp": "yyy",
   "enabled": true
