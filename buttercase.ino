@@ -10,9 +10,9 @@
 
 #define CYCLES 50000
 #define trace 1               // trace prints on/off
-//#define github_template 1   // GitHub template
+#define github_template 1   // GitHub template
 //#define test_loc 1          // test location
-#define kitchen 1             // kitchen location
+//#define kitchen 1             // kitchen location
 // pin definitions
  #define RELAY 0              // relay connected to GPIO0
  #define oneWireBus 2         // pin for DS18B20 temp. sensor
