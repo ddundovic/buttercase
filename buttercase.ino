@@ -9,17 +9,20 @@
 #include <ArduinoJson.h>
 
 #define CYCLES 50000
-#define trace 1         // trace prints on/off
-//#define test_loc 1      // test location
-#define kitchen 1       // kitchen location
+#define trace 1               // trace prints on/off
+//#define github_template 1   // GitHub template
+//#define test_loc 1          // test location
+#define kitchen 1             // kitchen location
 // pin definitions
- #define RELAY 0          // relay connected to GPIO0
- #define oneWireBus 2     // pin for DS18B20 temp. sensor
+ #define RELAY 0              // relay connected to GPIO0
+ #define oneWireBus 2         // pin for DS18B20 temp. sensor
 
 #ifdef test_loc
   #include "test_loc.h"
 #elif kitchen
   #include "kitchen.h"
+#elif github_template
+  #include "github_template.h"
 #endif
 
 WiFiClient wifiClient;
